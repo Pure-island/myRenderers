@@ -33,7 +33,6 @@ var PutPixel = function(x, y, color) {
 
 // Displays the contents of the offscreen buffer into the canvas.
 var UpdateCanvas = function() {
-  // canvas_buffer = canvas_context.getImageData(0, 0, canvas.width, canvas.height);
   canvas_context.putImageData(canvas_buffer, 0, 0);
 }
 
@@ -123,6 +122,12 @@ var Camera = function(position, orientation) {
   this.orientation = orientation;
 } 
 
+var Plane = function(normal, distance) {
+  if (!(this instanceof Plane)) { return new Plane(normal, distance); }
+
+  this.normal = normal;
+  this.distance = distance;
+}
 
 // 叉乘
 var CrossProduct = function(v1, v2) {
@@ -133,6 +138,11 @@ var CrossProduct = function(v1, v2) {
 var DotProduct = function(v1, v2) {
     return v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2];  
 }
+
+var DotVertex = function(v1, v2) {
+    return v1.x*v2.x + v1.y*v2.y + v1.z*v2.z;  
+}
+
 // 向量相减
 var Subtract = function(v1, v2) {
   return [v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]];
@@ -167,6 +177,16 @@ var AddVertex = function(v1, v2) {
 }
 
 // Makes a transform matrix for a rotation around the OY axis.
+var MakeOZRotationMatrix = function(degrees) {
+  var cos = Math.cos(degrees*Math.PI/180.0);
+  var sin = Math.sin(degrees*Math.PI/180.0);
+
+  return Mat4x4([[cos, -sin, 0, 0],
+                 [sin, cos, 0, 0],
+                 [0 , 0,  1, 0],
+                 [0 , 0,  0, 1]])
+}
+
 var MakeOYRotationMatrix = function(degrees) {
   var cos = Math.cos(degrees*Math.PI/180.0);
   var sin = Math.sin(degrees*Math.PI/180.0);
@@ -177,6 +197,15 @@ var MakeOYRotationMatrix = function(degrees) {
                  [  0, 0,    0, 1]])
 }
 
+var MakeOXRotationMatrix = function(degrees) {
+  var cos = Math.cos(degrees*Math.PI/180.0);
+  var sin = Math.sin(degrees*Math.PI/180.0);
+
+  return Mat4x4([[1, 0, 0, 0],
+                 [0, cos, -sin, 0],
+                 [0, sin, cos, 0],
+                 [0, 0,   0, 1]])
+}
 
 // Makes a transform matrix for a translation.
 var MakeTranslationMatrix = function(translation) {
@@ -443,11 +472,11 @@ var ViewportToCanvas = function(p2d) {
 
 
 var ProjectVertex = function(v) {
-  return ViewportToCanvas(Pt(
-    v.x * projection_plane_z / v.z,
-    v.y * projection_plane_z / v.z,
-    1
-  ));
+  return Vertex(
+    v.x * projection_plane_z / v.z * canvas.width / viewport_size,
+    v.y * projection_plane_z / v.z * canvas.height / viewport_size,
+    v.z
+  );
 }
 
 
@@ -458,6 +487,43 @@ var RenderTriangle = function(triangle, projected) {
 		        triangle.color);
 }
 
+var ClipTriangleFunc = function(triangle, plane, triangles, vertexes) {
+  var v0 = vertexes[triangle.v0];
+  var v1 = vertexes[triangle.v1];
+  var v2 = vertexes[triangle.v2];
+
+  var in0 = DotVertex(plane.normal, v0) + plane.distance > 0;
+  var in1 = DotVertex(plane.normal, v1) + plane.distance > 0;
+  var in2 = DotVertex(plane.normal, v2) + plane.distance > 0;
+
+  var in_count = in0 + in1 + in2;
+  if (in_count == 0) {
+    // Nothing to do - the triangle is fully clipped out.
+  } else if (in_count == 3) {
+    // The triangle is fully in front of the plane.
+    triangles.push(triangle);
+  } else if (in_count == 1) {
+    // The triangle has one vertex in. Output is one clipped triangle.
+
+  } else if (in_count == 2) {
+    // The triangle has two vertexes in. Output is two clipped triangles.
+  }
+}
+
+// Clips a triangle against a plane. Adds output to triangles and vertexes.
+var ClipTriangle = function(triangle, triangles, vertexes) {
+  var planes = [Plane(Vertex(1,0,0),300),Plane(Vertex(-1,0,0),300),Plane(Vertex(0,1,0),300),Plane(Vertex(0,-1,0),300),Plane(Vertex(0,0,1),20)];
+  var temp1_triangles = [];
+  var temp2_triangles = [triangle];
+  planes.forEach(plane_element => {
+    temp1_triangles = temp2_triangles;
+    temp2_triangles = [];
+    temp1_triangles.forEach(triangle_element => {
+      ClipTriangleFunc(triangle_element, plane_element, temp2_triangles,vertexes);
+    });
+  });
+  return temp2_triangles;
+}
 
 var RenderModel = function(model, transform) {
   var projected = [];
@@ -466,10 +532,18 @@ var RenderModel = function(model, transform) {
     var vertexH = Vertex4(vertex.x, vertex.y, vertex.z, 1)
     projected.push(ProjectVertex(MultiplyMV(transform, vertexH)));
   }
+  var new_triangles = [];
   for (var i = 0; i < model.triangles.length; i++) {
-    RenderTriangle(model.triangles[i], projected);
-  }
+    var t = ClipTriangle(model.triangles[i],new_triangles,projected);
+    new_triangles = new_triangles.concat(t);
+  };
+  new_triangles.forEach(element => {
+    RenderTriangle(element, projected);
+  });
+  console.log(new_triangles.length);
 }
+
+
 
 
 var RenderScene = function(camera, instances) {
@@ -522,9 +596,11 @@ var instances = [Instance(cube, Vertex(-1.5, 0, 7), Identity4x4, 0.75),
       	         Instance(cube, Vertex(1.25, 2.5, 7.5), MakeOYRotationMatrix(195)),
 ];
 
-var camera = Camera([-3, 1, 2], MakeOYRotationMatrix(-30));
+var camera = Camera([0, 1, -2], MakeOYRotationMatrix(0));
 
 var mainLoop = function(){
+  canvas_context.clearRect(0, 0, canvas.width, canvas.height);
+  canvas_buffer = canvas_context.getImageData(0, 0, canvas.width, canvas.height);
   RenderScene(camera, instances);
 
   UpdateCanvas();
@@ -550,5 +626,20 @@ document.onkeydown=function(e){    //对整个页面监听键盘输入
 
   mainLoop();
 }
+
+const element = document.querySelector('canvas');
+
+// 绑定鼠标移动事件
+element.addEventListener('mousemove', e => {
+  // 获取鼠标在X轴上的位置
+  const mouseX = e.pageX - 300;
+
+  // 获取鼠标在Y轴上的位置
+  const mouseY = e.pageY - 300;
+
+  camera.orientation = MultiplyMM4(MakeOXRotationMatrix(-mouseY/10) , MakeOYRotationMatrix(mouseX/10));
+
+  mainLoop();
+});
 
 </script>
