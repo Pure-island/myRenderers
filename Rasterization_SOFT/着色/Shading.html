@@ -1,8 +1,30 @@
 <!--
 !!html_title Lines demo 1 - Computer Graphics from scratch
 -->
+<input type="file" id="files" multiple="multiple" >
 <canvas id="canvas" width=600 height=600 style="border: 1px grey solid">
+
 <script>
+
+window.onload=function(){
+  var getFile =document.getElementById("files");
+  getFile.onchange=function(e){
+      //获取到文件以后就会返回一个对象，通过这个对象即可获取文件
+      // console.log(e.currentTarget.files);//所有文件，返回的是一个数组
+      // console.log(e.currentTarget.files[0].name)//文件名
+      input_files = Array.from(e.currentTarget.files);
+      input_files.forEach(element => {
+        var reader = new FileReader();//new一个FileReader实例
+        reader.readAsText(element);
+        reader.onload=function(){
+          objModel = GenerateFromObj(reader.result, GRAY);
+          instances = [];
+          instances.push(Instance(objModel, Vertex(0, -30, 100), MakeOYRotationMatrix(180), 1));
+          mainLoop();
+        }
+      });
+  }
+}
 
 // ======================================================================
 //  Low-level canvas access. 
@@ -12,6 +34,7 @@ var canvas = document.getElementById("canvas");
 var canvas_context = canvas.getContext("2d");
 var canvas_buffer = canvas_context.getImageData(0, 0, canvas.width, canvas.height);
 var canvas_pitch = canvas_buffer.width * 4;
+var z_buffer = new Array(canvas.height).fill(0).map(v => new Array(canvas.width).fill(0));
 
 
 // The PutPixel() function.
@@ -28,6 +51,25 @@ var PutPixel = function(x, y, color) {
   canvas_buffer.data[offset++] = color[1];
   canvas_buffer.data[offset++] = color[2];
   canvas_buffer.data[offset++] = 255; // Alpha = 255 (full opacity)
+}
+
+var PutPixelWithZbuffer = function(x, y, color, z_reciprocal) {
+  x = canvas.width/2 + Math.floor(x);
+  y = canvas.height/2 - Math.floor(y) - 1;
+
+  if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) {
+    return;
+  }
+
+  if(z_reciprocal >= z_buffer[x][y]){
+    z_buffer[x][y] = z_reciprocal;
+    var offset = 4*x + canvas_pitch*y;
+    canvas_buffer.data[offset++] = color[0];
+    canvas_buffer.data[offset++] = color[1];
+    canvas_buffer.data[offset++] = color[2];
+    canvas_buffer.data[offset++] = 255; // Alpha = 255 (full opacity)
+  }
+
 }
 
 
@@ -91,6 +133,16 @@ var Triangle = function(v0, v1, v2, color) {
   this.color = color;
 }
 
+var TriangleWithNormal = function(indexes, color, normals) {
+  if (!(this instanceof TriangleWithNormal)) { return new TriangleWithNormal(indexes, color, normals); }
+
+  this.v0 = indexes[0];
+  this.v1 = indexes[1];
+  this.v2 = indexes[2];
+  this.color = color;
+  this.normals = normals;
+}
+
 
 // A Model.
 var Model = function(vertexes, triangles) {
@@ -129,6 +181,19 @@ var Plane = function(normal, distance) {
   this.distance = distance;
 }
 
+// A Light.
+var LT_AMBIENT = 0;
+var LT_POINT = 1;
+var LT_DIRECTIONAL = 2;
+
+var Light = function(type, intensity, vector) {
+  if (!(this instanceof Light)) { return new Light(type, intensity, vector); }
+
+  this.type = type;
+  this.intensity = intensity;
+  this.vector = vector;
+}
+
 // 叉乘
 var CrossProduct = function(v1, v2) {
     return [v1[1]*v2[2] - v1[2]*v2[1], v1[2]*v2[0] - v1[0]-v2[2], v1[0]*v2[1] - v1[1]*v2[0]];  
@@ -148,9 +213,17 @@ var Subtract = function(v1, v2) {
   return [v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]];
 }
 
+var SubtractVertex = function(v1, v2) {
+  return Vertex(v1.x-v2.x, v1.y-v2.y,v1.z-v2.z);
+}
+
 // 计算模长
 var Length = function(vec) {
   return Math.sqrt(DotProduct(vec, vec));
+}
+
+var LengthVertex = function(vec) {
+  return Math.sqrt(DotVertex(vec, vec));
 }
 
 
@@ -174,6 +247,11 @@ var MultiplyVertex = function(k, vec) {
 // Computes v1 + v2.
 var AddVertex = function(v1, v2) {
   return Vertex(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z);
+}
+
+var NormalizeVertex = function(v) {
+  l = LengthVertex(v);
+  return Vertex(v.x/l, v.y/l, v.z/l);
 }
 
 // Makes a transform matrix for a rotation around the OY axis.
@@ -267,6 +345,83 @@ var Transposed = function(mat) {
   return result;
 }
 
+//行列式
+function det(mat){
+  var A;
+  if(mat.data)
+    A = mat.data;
+  else
+    A = mat;
+  var n = A.length;
+  if (n === 1) {
+      return A[0][0];
+  } else if (n === 2) {
+      return A[0][0] * A[1][1] - A[0][1] * A[1][0];
+  } else {
+      var sum = 0;
+      for (var i = 0; i < n; i++) {
+          var submatrix = [];
+          for (var j = 1; j < n; j++) {
+              submatrix.push(A[j].slice(0, i).concat(A[j].slice(i + 1)));
+          }
+          var sign = Math.pow(-1, i);
+          var cofactor = sign * det(submatrix);
+          sum += A[0][i] * cofactor;
+      }
+      return sum;
+  }
+}
+
+//伴随矩阵
+function adj(mat){
+  var A;
+  if(mat.data)
+    A = mat.data;
+  else
+    A = mat;
+  var n = A.length;
+  var adjA = [];
+  for (var i = 0; i < n; i++) {
+      adjA[i] = [];
+      for (var j = 0; j < n; j++) {
+          var submatrix = [];
+          for (var k = 0; k < n; k++) {
+              if (k !== i) {
+                  submatrix.push(A[k].slice(0, j).concat(A[k].slice(j + 1)));
+              }
+          }
+          var sign = Math.pow(-1, i + j);
+          adjA[i][j] = sign * det(submatrix);
+      }
+  }
+  return adjA;
+}
+
+//逆矩阵
+function inverse(mat){
+  var A;
+  if(mat.data)
+    A = mat.data;
+  else
+    A = mat;
+  var n = A.length;
+  var detA = det(A);
+  if (detA === 0) {
+      console.log("Matrix is not invertible.");
+      return null;
+  }
+  var adjA = adj(A);
+  var Ainv = [];
+  for (var i = 0; i < n; i++) {
+      Ainv[i] = [];
+      for (var j = 0; j < n; j++) {
+          Ainv[i][j] = adjA[j][i] / detA;
+      }
+  }
+  return Mat4x4(Ainv);
+}
+
+
 // ======================================================================
 //  Rasterization code.
 // ======================================================================
@@ -300,11 +455,13 @@ var BarycentricInterpolation = function(p0,p1,p2,p) {
   return [a, b, c];
 }
 
+//检查点是否在三角形内部
 var PointInsideTriangle = function(p0,p1,p2,p){
+  
   var product1 = CrossProduct(Subtract([p1.x,p1.y,0], [p0.x,p0.y,0]), Subtract([p.x,p.y,0], [p0.x,p0.y,0]));
   var product2 = CrossProduct(Subtract([p2.x,p2.y,0], [p1.x,p1.y,0]), Subtract([p.x,p.y,0], [p1.x,p1.y,0]));
   var product3 = CrossProduct(Subtract([p0.x,p0.y,0], [p2.x,p2.y,0]), Subtract([p.x,p.y,0], [p2.x,p2.y,0]));
-  if( product1[2]>0&&product2[2]>0&&product3[2]>0 || product1[2]<0&&product2<0[2]&&product3[2]<0){
+  if( (product1[2]>=0&&product2[2]>=0&&product3[2]>=0) || (product1[2]<=0&&product2[2]<=0&&product3[2]<=0)){
     return true;
   }
   return false;
@@ -403,16 +560,48 @@ var DrawWireframeTriangle = function(p0,p1,p2,color){
 
 
 // 包围盒法画三角形
-var DrawFilledTriangle = function(p0,p1,p2,color){
+var DrawFilledTriangle = function(p0,p1,p2,normals,color){
+  // DrawWireframeTriangle(p0,p1,p2,color);
   var min_x = Math.min(p0.x,p1.x,p2.x);
   var min_y = Math.min(p0.y,p1.y,p2.y);
   var max_x = Math.max(p0.x,p1.x,p2.x);
   var max_y = Math.max(p0.y,p1.y,p2.y);
 
-  for(var x = min_x; x < max_x; x++){
-    for(var y = min_y; y < max_y; y++){
-      if(PointInsideTriangle(p0,p1,p2,Pt(x,y,1))){
-        PutPixel(x,y,color);
+  for(var x = min_x-2; x <= max_x +2; x++){
+    for(var y = min_y-2; y <= max_y +2; y++){      
+      if(PointInsideTriangle(p0,p1,p2,Pt(x,y,1))){   
+        var local_diffuse= [0,0,0];
+        var local_specular= [0,0,0];
+        var barycentric_coords =BarycentricInterpolation(p0,p1,p2,Pt(x,y,1));
+        normal = AddVertex(AddVertex(MultiplyVertex(barycentric_coords[0], normals[0]), MultiplyVertex(barycentric_coords[1], normals[1])), MultiplyVertex(barycentric_coords[2], normals[2]));
+        normal = NormalizeVertex(normal);
+        var z_reciprocal = barycentric_coords[0]*(1/p0.z) + barycentric_coords[1]*(1/p1.z) + barycentric_coords[2]*(1/p2.z);        
+        lights.forEach(element => {
+          if(element.type == LT_AMBIENT){
+            local_diffuse = Add(Multiply(element.intensity, color),local_diffuse);
+          }else if(element.type == LT_DIRECTIONAL){
+            lightDir = MultiplyVertex(-1,element.vector);
+            lightDir = NormalizeVertex(lightDir);
+            cof = Math.max(DotVertex(lightDir,normal), 0) ;
+            local_diffuse = Add(Multiply(element.intensity * cof, color),local_diffuse);
+
+            half_dir = MultiplyVertex(0.5,AddVertex(lightDir,normal));
+            spec_cof = Math.pow(Math.max(DotVertex(half_dir,normal), 0), 64) ;
+            local_specular = Add(Multiply(element.intensity * spec_cof, WHITE),local_specular);
+          }else if(element.type == LT_POINT){
+            lightDir = SubtractVertex(element.vector,Vertex(x,y,1/z_reciprocal));
+            lightDir = NormalizeVertex(lightDir);
+            cof = Math.max(DotVertex(lightDir,normal), 0) ;
+            local_diffuse = Add(Multiply(element.intensity * cof, color),local_diffuse);
+
+            half_dir = MultiplyVertex(0.5,AddVertex(lightDir,normal));
+            spec_cof = Math.pow(Math.max(DotVertex(half_dir,normal), 0), 64) ;
+            local_specular = Add(Multiply(element.intensity * spec_cof, WHITE),local_specular);
+          }
+        });
+        shading_color = Add(local_diffuse,local_specular);
+        PutPixelWithZbuffer(x,y,shading_color,z_reciprocal);
+        
       }
     }
   }
@@ -440,7 +629,9 @@ var DrawFilledTriangle = function(p0,p1,p2,color){
 //       x_right = xlist_p0p1p2;
 //     }
 //     for(var x = x_left[y-p0.y]; x<x_right[y-p0.y];x++){
-//       PutPixel(x,y,color);
+//       var barycentric_coords =BarycentricInterpolation(p0,p1,p2,Pt(x,y,1));
+//       var z_reciprocal = barycentric_coords[0]*(1/p0.z) + barycentric_coords[1]*(1/p1.z) + barycentric_coords[2]*(1/p2.z);
+//       PutPixelWithZbuffer(x,y,color, z_reciprocal);
 //     }
 //   }
 // }
@@ -473,18 +664,24 @@ var ViewportToCanvas = function(p2d) {
 
 var ProjectVertex = function(v) {
   return Vertex(
-    v.x * projection_plane_z / v.z * canvas.width / viewport_size,
-    v.y * projection_plane_z / v.z * canvas.height / viewport_size,
+    Math.floor(v.x * projection_plane_z / v.z * canvas.width / viewport_size),
+    Math.floor(v.y * projection_plane_z / v.z * canvas.height / viewport_size),
+    v.z
+  );
+}
+
+var Vertex4to3 = function(v) {
+  return Vertex(
+    v.x ,
+    v.y ,
     v.z
   );
 }
 
 
-var RenderTriangle = function(triangle, projected) {
-  DrawWireframeTriangle(projected[triangle.v0],
-		        projected[triangle.v1],
-		        projected[triangle.v2],
-		        triangle.color);
+var RenderTriangle = function(element) {
+  DrawFilledTriangle(element.v0,element.v1,element.v2, element.normals,element.color);
+  // DrawWireframeTriangle(element.v0,element.v1,element.v2, element.color);
 }
 
 var FindIntersectionPoint = function(plane, v0, v1){
@@ -496,11 +693,13 @@ var FindIntersectionPoint = function(plane, v0, v1){
   var frac1 = -(v0.x*plane.normal.x + v0.y*plane.normal.y + v0.z*plane.normal.z + plane.distance);
   var t = frac1/frac0;
 
-  return Vertex(v0.x+t*slope_x,v0.y+t*slope_y,v0.z+t*slope_z);
+  return Vertex(Math.floor(v0.x+t*slope_x),Math.floor(v0.y+t*slope_y),v0.z+t*slope_z);
 }
 
 var ClipTriangleFunc = function(triangle, plane, new_triangles) {
-
+  if(!triangle.normals){
+    console.log("asd");
+  }
   var in0 = DotVertex(plane.normal, triangle.v0) + plane.distance > 0;
   var in1 = DotVertex(plane.normal, triangle.v1) + plane.distance > 0;
   var in2 = DotVertex(plane.normal, triangle.v2) + plane.distance > 0;
@@ -524,7 +723,24 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
     });
 
     IntersectionPoints = [FindIntersectionPoint(plane,in_vertex,out_vertexs[0]), FindIntersectionPoint(plane,in_vertex,out_vertexs[1])];
-    new_triangles.push(Triangle(in_vertex,IntersectionPoints[0],IntersectionPoints[1],triangle.color));
+
+    //没写三维空间的重心坐标插值，先试试在屏幕空间插值法线
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,in_vertex);
+    in_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[0]);
+    out0_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[1]);
+    out1_normal =AddVertex(AddVertex( MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
+
+    new_triangles.push(TriangleWithNormal(
+      [in_vertex,
+      IntersectionPoints[0],
+      IntersectionPoints[1]],
+      triangle.color,
+      [in_normal,
+      out0_normal,
+      out1_normal]
+      ));
 
   } else if (in_count == 2) {
     // The triangle has two vertexes in. Output is two clipped triangles.
@@ -539,13 +755,43 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
     });
 
     IntersectionPoints = [FindIntersectionPoint(plane,out_vertex,in_vertexs[0]), FindIntersectionPoint(plane,out_vertex,in_vertexs[1])];
-    new_triangles.push(Triangle(in_vertexs[0],in_vertexs[1],IntersectionPoints[0],triangle.color));
-    new_triangles.push(Triangle(IntersectionPoints[0],IntersectionPoints[1],in_vertexs[1],triangle.color));
+
+    //没写三维空间的重心坐标插值，先试试在屏幕空间插值法线
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,in_vertexs[0]);
+    in0_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,in_vertexs[1]);
+    in1_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])) , MultiplyVertex(bary_coord[2], triangle.normals[2]));
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[0]);
+    out0_normal =AddVertex(AddVertex( MultiplyVertex(bary_coord[0], triangle.normals[0]) ,MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
+    bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[1]);
+    out1_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1]) ), MultiplyVertex(bary_coord[2], triangle.normals[2]));
+
+    new_triangles.push(TriangleWithNormal(
+      [in_vertexs[0],
+      in_vertexs[1],
+      IntersectionPoints[0]],
+      triangle.color,
+      [in0_normal,
+      in1_normal,
+      out0_normal]
+      ));
+    new_triangles.push(TriangleWithNormal(
+      [IntersectionPoints[0],
+      IntersectionPoints[1],
+      in_vertexs[1]],
+      triangle.color,
+      [out0_normal,
+      out1_normal,
+      in1_normal]      
+      ));
   }
 }
 
 // Clips a triangle against a plane. Adds output to triangles and vertexes.
 var ClipTriangle = function(triangle) {
+  if(!triangle.normals){
+    console.log("asd");
+  }
   var planes = [Plane(Vertex(1,0,0),canvas.width/2),
                 Plane(Vertex(-1,0,0),canvas.width/2),
                 Plane(Vertex(0,1,0),canvas.height/2),
@@ -572,15 +818,22 @@ var RenderModel = function(model, transform) {
   }
   var new_triangles = [];
   for (var i = 0; i < model.triangles.length; i++) {
-    projected_triangle = Triangle(projected[model.triangles[i].v0],projected[model.triangles[i].v1],projected[model.triangles[i].v2],model.triangles[i].color);
+    projected_triangle = TriangleWithNormal(
+      [projected[model.triangles[i].v0],
+      projected[model.triangles[i].v1],
+      projected[model.triangles[i].v2]],
+      model.triangles[i].color,
+      [Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[0].x,model.triangles[i].normals[0].y,model.triangles[i].normals[0].z,0))),
+      Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[1].x,model.triangles[i].normals[1].y,model.triangles[i].normals[1].z,0))),
+      Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[2].x,model.triangles[i].normals[2].y,model.triangles[i].normals[2].z,0)))]
+      );//法线存摄像机空间的
     var t = ClipTriangle(projected_triangle);
     new_triangles = new_triangles.concat(t);
   };
   new_triangles.forEach(element => {
-    // RenderTriangle(element, projected);
-    DrawWireframeTriangle(element.v0,element.v1,element.v2, element.color);
+    RenderTriangle(element);
   });
-  console.log(new_triangles.length);
+  // console.log(new_triangles.length);
 }
 
 
@@ -597,6 +850,88 @@ var RenderScene = function(camera, instances) {
 
 
 
+// ----- Sphere model generator -----
+var GenerateSphere = function(divs, color) {
+  var vertexes = [];
+  var triangles = [];
+
+  var delta_angle = 2.0*Math.PI / divs;
+
+  // Generate vertexes and normals.
+  for (var d = 0; d < divs + 1; d++) {
+    var y = (2.0 / divs) * (d - divs/2);
+    var radius = Math.sqrt(1.0 - y*y);
+    for (var i = 0; i < divs; i++) {
+      var vertex = Vertex(radius*Math.cos(i*delta_angle), y, radius*Math.sin(i*delta_angle));
+      vertexes.push(vertex);
+    }
+  }
+
+  // Generate triangles.
+  for (var d = 0; d < divs; d++) {
+    for (var i = 0; i < divs; i++) {
+      var i0 = d*divs + i;
+      var i1 = (d+1)*divs + (i+1)%divs;
+      var i2 = divs*d + (i+1)%divs;
+      var tri0 = [i0, i1, i2];
+      var tri1 = [i0, i0+divs, i1];
+      triangles.push(TriangleWithNormal(tri0, color, [vertexes[tri0[0]], vertexes[tri0[1]], vertexes[tri0[2]]]));
+      triangles.push(TriangleWithNormal(tri1, color, [vertexes[tri1[0]], vertexes[tri1[1]], vertexes[tri1[2]]]));
+    }
+  }
+
+  return Model(vertexes, triangles);
+}
+
+var GenerateFromObj = function(objText, color) {
+  var vertexes = [];
+  var normals = [];
+  var triangles = [];
+
+  var vertexMatches = objText.match(/^v( -?\d+(\.\d+)?){3}$/gm);
+  if (vertexMatches)
+  {
+      vertexMatches.forEach(vertex => {
+        var vertices = vertex.split(" ");
+        vertices.shift();
+        var v = Vertex(parseFloat(vertices[0]), parseFloat(vertices[1]), parseFloat(vertices[2]));
+        vertexes.push(v);
+      });
+  }
+
+  var normalMatches = objText.match(/^vn( -?\d+(\.\d+)?){3}$/gm);
+  if (normalMatches)
+  {
+      normalMatches.forEach(normal =>
+      {
+          var list = normal.split(" ");
+          list.shift();
+          var n = Vertex(parseFloat(list[0]), parseFloat(list[1]), parseFloat(list[2]));
+          normals.push(n);
+      });
+  }
+
+  var faceMatches = objText.match(/^f( \d+\/\d+\/\d+)+$/gm);
+  if (faceMatches)
+  {
+      faceMatches.forEach(face =>
+      {
+          var list = face.split(" ");
+          list.shift();
+          list0 = list[0].split("\/").map(function(element){return parseInt(element)});
+          list1 = list[1].split("\/").map(function(element){return parseInt(element)});
+          list2 = list[2].split("\/").map(function(element){return parseInt(element)});
+          var normal = [normals[list0[2]], normals[list1[2]], normals[list2[2]]];
+          var triangle = TriangleWithNormal([list0[0],list1[0],list2[0]], color, normal);
+          triangles.push(triangle);
+      });
+  }
+
+  return Model(vertexes, triangles);
+}
+
+
+// ----- Cube model -----
 var vertexes = [
   Vertex(1, 1, 1),
   Vertex(-1, 1, 1),
@@ -614,32 +949,46 @@ var BLUE = [0, 0, 255];
 var YELLOW = [255, 255, 0];
 var PURPLE = [255, 0, 255];
 var CYAN = [0, 255, 255];
+var WHITE = [255, 255, 255];
+var GRAY = [155, 155, 155];
 
 var triangles = [
-  Triangle(0, 1, 2, RED),
-  Triangle(0, 2, 3, RED),
-  Triangle(4, 0, 3, GREEN),
-  Triangle(4, 3, 7, GREEN),
-  Triangle(5, 4, 7, BLUE),
-  Triangle(5, 7, 6, BLUE),
-  Triangle(1, 5, 6, YELLOW),
-  Triangle(1, 6, 2, YELLOW),
-  Triangle(4, 5, 1, PURPLE),
-  Triangle(4, 1, 0, PURPLE),
-  Triangle(2, 6, 7, CYAN),
-  Triangle(2, 7, 3, CYAN)
+  TriangleWithNormal([0, 1, 2], RED,    [Vertex(0, 0, 1), Vertex(0, 0, 1), Vertex(0, 0, 1)]),
+  TriangleWithNormal([0, 2, 3], RED,    [Vertex(0, 0, 1), Vertex(0, 0, 1), Vertex(0, 0, 1)]),
+  TriangleWithNormal([4, 0, 3], GREEN,  [Vertex(1, 0, 0), Vertex(1, 0, 0), Vertex(1, 0, 0)]),
+  TriangleWithNormal([4, 3, 7], GREEN,  [Vertex(1, 0, 0), Vertex(1, 0, 0), Vertex(1, 0, 0)]),
+  TriangleWithNormal([5, 4, 7], BLUE,   [Vertex(0, 0, -1), Vertex(0, 0, -1), Vertex(0, 0, -1)]),
+  TriangleWithNormal([5, 7, 6], BLUE,   [Vertex(0, 0, -1), Vertex(0, 0, -1), Vertex(0, 0, -1)]),
+  TriangleWithNormal([1, 5, 6], YELLOW, [Vertex(-1, 0, 0), Vertex(-1, 0, 0), Vertex(-1, 0, 0)]),
+  TriangleWithNormal([1, 6, 2], YELLOW, [Vertex(-1, 0, 0), Vertex(-1, 0, 0), Vertex(-1, 0, 0)]),
+  TriangleWithNormal([1, 0, 5], PURPLE, [Vertex(0, 1, 0), Vertex(0, 1, 0), Vertex(0, 1, 0)]),
+  TriangleWithNormal([5, 0, 4], PURPLE, [Vertex(0, 1, 0), Vertex(0, 1, 0), Vertex(0, 1, 0)]),
+  TriangleWithNormal([2, 6, 7], CYAN,   [Vertex(0, -1, 0), Vertex(0, -1, 0), Vertex(0, -1, 0)]),
+  TriangleWithNormal([2, 7, 3], CYAN,   [Vertex(0, -1, 0), Vertex(0, -1, 0), Vertex(0, -1, 0)])
 ];
 
-var cube = Model(vertexes, triangles);
+var cube = Model(vertexes, triangles, Vertex(0, 0, 0), Math.sqrt(3));
+// ----------
 
-var instances = [Instance(cube, Vertex(-1.5, 0, 7), Identity4x4, 0.75),
-      	         Instance(cube, Vertex(1.25, 2.5, 7.5), MakeOYRotationMatrix(195)),
+var sphere = GenerateSphere(15, GREEN);
+
+var instances = [
+  Instance(cube, Vertex(-1.5, 0, 7), Identity4x4, 0.75),
+  Instance(cube, Vertex(1.25, 2.5, 7.5), MakeOYRotationMatrix(195)),
+  Instance(sphere, Vertex(1.75, -0.5, 7), Identity4x4, 1.5),
 ];
 
 var camera = Camera([0, 1, -2], MakeOYRotationMatrix(0));
 
+lights = [
+  Light(LT_AMBIENT, 0.2),
+  Light(LT_DIRECTIONAL, 0.2, Vertex(-1, 0, 1)),
+  Light(LT_POINT, 0.6, Vertex(-3, 2, -10))
+];
+
 var mainLoop = function(){
   canvas_context.clearRect(0, 0, canvas.width, canvas.height);
+  z_buffer = new Array(canvas.height).fill(0).map(v => new Array(canvas.width).fill(0));
   canvas_buffer = canvas_context.getImageData(0, 0, canvas.width, canvas.height);
   RenderScene(camera, instances);
 

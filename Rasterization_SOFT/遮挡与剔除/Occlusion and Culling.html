@@ -12,6 +12,7 @@ var canvas = document.getElementById("canvas");
 var canvas_context = canvas.getContext("2d");
 var canvas_buffer = canvas_context.getImageData(0, 0, canvas.width, canvas.height);
 var canvas_pitch = canvas_buffer.width * 4;
+var z_buffer = new Array(canvas.height).fill(0).map(v => new Array(canvas.width).fill(0));
 
 
 // The PutPixel() function.
@@ -28,6 +29,25 @@ var PutPixel = function(x, y, color) {
   canvas_buffer.data[offset++] = color[1];
   canvas_buffer.data[offset++] = color[2];
   canvas_buffer.data[offset++] = 255; // Alpha = 255 (full opacity)
+}
+
+var PutPixelWithZbuffer = function(x, y, color, z_reciprocal) {
+  x = canvas.width/2 + Math.floor(x);
+  y = canvas.height/2 - Math.floor(y) - 1;
+
+  if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) {
+    return;
+  }
+
+  if(z_reciprocal > z_buffer[x][y]){
+    z_buffer[x][y] = z_reciprocal;
+    var offset = 4*x + canvas_pitch*y;
+    canvas_buffer.data[offset++] = color[0];
+    canvas_buffer.data[offset++] = color[1];
+    canvas_buffer.data[offset++] = color[2];
+    canvas_buffer.data[offset++] = 255; // Alpha = 255 (full opacity)
+  }
+
 }
 
 
@@ -300,11 +320,12 @@ var BarycentricInterpolation = function(p0,p1,p2,p) {
   return [a, b, c];
 }
 
+//检查点是否在三角形内部
 var PointInsideTriangle = function(p0,p1,p2,p){
   var product1 = CrossProduct(Subtract([p1.x,p1.y,0], [p0.x,p0.y,0]), Subtract([p.x,p.y,0], [p0.x,p0.y,0]));
   var product2 = CrossProduct(Subtract([p2.x,p2.y,0], [p1.x,p1.y,0]), Subtract([p.x,p.y,0], [p1.x,p1.y,0]));
   var product3 = CrossProduct(Subtract([p0.x,p0.y,0], [p2.x,p2.y,0]), Subtract([p.x,p.y,0], [p2.x,p2.y,0]));
-  if( product1[2]>0&&product2[2]>0&&product3[2]>0 || product1[2]<0&&product2<0[2]&&product3[2]<0){
+  if( (product1[2]>=0&&product2[2]>=0&&product3[2]>=0) || (product1[2]<=0&&product2[2]<=0&&product3[2]<=0)){
     return true;
   }
   return false;
@@ -409,10 +430,14 @@ var DrawFilledTriangle = function(p0,p1,p2,color){
   var max_x = Math.max(p0.x,p1.x,p2.x);
   var max_y = Math.max(p0.y,p1.y,p2.y);
 
-  for(var x = min_x; x < max_x; x++){
-    for(var y = min_y; y < max_y; y++){
-      if(PointInsideTriangle(p0,p1,p2,Pt(x,y,1))){
-        PutPixel(x,y,color);
+  for(var x = min_x-2; x <= max_x +2; x++){
+    for(var y = min_y-2; y <= max_y +2; y++){
+      
+      if(PointInsideTriangle(p0,p1,p2,Pt(x,y,1))){        
+        var barycentric_coords =BarycentricInterpolation(p0,p1,p2,Pt(x,y,1));
+        var z_reciprocal = barycentric_coords[0]*(1/p0.z) + barycentric_coords[1]*(1/p1.z) + barycentric_coords[2]*(1/p2.z);        
+        PutPixelWithZbuffer(x,y,color,z_reciprocal);
+        
       }
     }
   }
@@ -440,7 +465,9 @@ var DrawFilledTriangle = function(p0,p1,p2,color){
 //       x_right = xlist_p0p1p2;
 //     }
 //     for(var x = x_left[y-p0.y]; x<x_right[y-p0.y];x++){
-//       PutPixel(x,y,color);
+//       var barycentric_coords =BarycentricInterpolation(p0,p1,p2,Pt(x,y,1));
+//       var z_reciprocal = barycentric_coords[0]*(1/p0.z) + barycentric_coords[1]*(1/p1.z) + barycentric_coords[2]*(1/p2.z);
+//       PutPixelWithZbuffer(x,y,color, z_reciprocal);
 //     }
 //   }
 // }
@@ -480,11 +507,9 @@ var ProjectVertex = function(v) {
 }
 
 
-var RenderTriangle = function(triangle, projected) {
-  DrawWireframeTriangle(projected[triangle.v0],
-		        projected[triangle.v1],
-		        projected[triangle.v2],
-		        triangle.color);
+var RenderTriangle = function(element) {
+  DrawFilledTriangle(element.v0,element.v1,element.v2, element.color);
+  // DrawWireframeTriangle(element.v0,element.v1,element.v2, element.color);
 }
 
 var FindIntersectionPoint = function(plane, v0, v1){
@@ -577,10 +602,9 @@ var RenderModel = function(model, transform) {
     new_triangles = new_triangles.concat(t);
   };
   new_triangles.forEach(element => {
-    // RenderTriangle(element, projected);
-    DrawWireframeTriangle(element.v0,element.v1,element.v2, element.color);
+    RenderTriangle(element);
   });
-  console.log(new_triangles.length);
+  // console.log(new_triangles.length);
 }
 
 
@@ -632,14 +656,16 @@ var triangles = [
 
 var cube = Model(vertexes, triangles);
 
-var instances = [Instance(cube, Vertex(-1.5, 0, 7), Identity4x4, 0.75),
-      	         Instance(cube, Vertex(1.25, 2.5, 7.5), MakeOYRotationMatrix(195)),
+var instances = [
+                Instance(cube, Vertex(-1.5, 0, 7), Identity4x4, 0.75),
+                Instance(cube, Vertex(1.25, 2.5, 7.5), MakeOYRotationMatrix(195)),
 ];
 
 var camera = Camera([0, 1, -2], MakeOYRotationMatrix(0));
 
 var mainLoop = function(){
   canvas_context.clearRect(0, 0, canvas.width, canvas.height);
+  z_buffer = new Array(canvas.height).fill(0).map(v => new Array(canvas.width).fill(0));
   canvas_buffer = canvas_context.getImageData(0, 0, canvas.width, canvas.height);
   RenderScene(camera, instances);
 
