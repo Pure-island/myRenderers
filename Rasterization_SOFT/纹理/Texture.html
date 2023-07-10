@@ -3,7 +3,6 @@
 -->
 <input type="file" id="files" multiple="multiple" >
 <canvas id="canvas" width=600 height=600 style="border: 1px grey solid">
-<img src="otherdomain.com" crossorigin="Anonymous" />
 
 <script>
 
@@ -15,18 +14,28 @@ window.onload=function(){
       // console.log(e.currentTarget.files[0].name)//文件名
       input_files = Array.from(e.currentTarget.files);
       input_files.forEach(element => {
-
-
-
-        var reader = new FileReader();//new一个FileReader实例
-        reader.readAsText(element);
-        reader.onload=function(){
-          objModel = GenerateFromObj(reader.result, GRAY);
-          instances = [];
-          instances.push(Instance(objModel, Vertex(0, -30, 100), MakeOYRotationMatrix(180), 1));
-          mainLoop();
+        if (
+          element.type === "image/png" ||
+          element.type === "image/jpeg" ||
+          element.type === "image/jpg"
+        ){
+          var reader = new FileReader();//new一个FileReader实例
+          reader.readAsDataURL(element);
+          reader.onload=function(){
+            current_texture = Texture(reader.result);
+          }
         }
+        else{
+          var reader = new FileReader();//new一个FileReader实例
+          reader.readAsText(element);
+          reader.onload=function(){
+            objModel = GenerateFromObj(reader.result, GRAY);
+            instances = [];
+            instances.push(Instance(objModel, Vertex(0, -30, 100), MakeOYRotationMatrix(180), 1));            
+          }
+        }               
       });
+      // mainLoop(); 
   }
 }
 
@@ -137,14 +146,15 @@ var Triangle = function(v0, v1, v2, color) {
   this.color = color;
 }
 
-var TriangleWithNormal = function(indexes, color, normals) {
-  if (!(this instanceof TriangleWithNormal)) { return new TriangleWithNormal(indexes, color, normals); }
+var TriangleWithNormal = function(indexes, color, normals, uvs) {
+  if (!(this instanceof TriangleWithNormal)) { return new TriangleWithNormal(indexes, color, normals, uvs); }
 
   this.v0 = indexes[0];
   this.v1 = indexes[1];
   this.v2 = indexes[2];
   this.color = color;
   this.normals = normals;
+  this.uvs = uvs;
 }
 
 
@@ -200,12 +210,11 @@ var Light = function(type, intensity, vector) {
 
 
 // A Texture.
-var Texture = function(url) {
-  if (!(this instanceof Texture)) { return new Texture(url); } 
+var Texture = function(data) {
+  if (!(this instanceof Texture)) { return new Texture(data); } 
 
   this.image = new Image();
-  this.image.crossOrigin = "Anonymous";
-  this.image.src = url;
+  this.image.src = data;
 
   var texture = this;
 
@@ -223,6 +232,7 @@ var Texture = function(url) {
 }
 
 Texture.prototype.getTexel = function(u, v) {
+  v = 1-v;
   var iu = (u*this.iw) | 0;
   var iv = (v*this.ih) | 0;
 
@@ -602,7 +612,8 @@ var DrawWireframeTriangle = function(p0,p1,p2,color){
 
 
 // 包围盒法画三角形
-var DrawFilledTriangle = function(p0,p1,p2,normals,color){
+var DrawFilledTriangle = function(p0,p1,p2,normals,input_color,uvs){
+  
   // DrawWireframeTriangle(p0,p1,p2,color);
   var min_x = Math.min(p0.x,p1.x,p2.x);
   var min_y = Math.min(p0.y,p1.y,p2.y);
@@ -610,13 +621,18 @@ var DrawFilledTriangle = function(p0,p1,p2,normals,color){
   var max_y = Math.max(p0.y,p1.y,p2.y);
 
   for(var x = min_x-2; x <= max_x +2; x++){
-    for(var y = min_y-2; y <= max_y +2; y++){      
+    for(var y = min_y-2; y <= max_y +2; y++){   
+      var color = input_color;
       if(PointInsideTriangle(p0,p1,p2,Pt(x,y,1))){   
         var local_diffuse= [0,0,0];
         var local_specular= [0,0,0];
         var barycentric_coords =BarycentricInterpolation(p0,p1,p2,Pt(x,y,1));
         normal = AddVertex(AddVertex(MultiplyVertex(barycentric_coords[0], normals[0]), MultiplyVertex(barycentric_coords[1], normals[1])), MultiplyVertex(barycentric_coords[2], normals[2]));
         normal = NormalizeVertex(normal);
+        if(current_texture){
+          uv = Add(Add(Multiply(barycentric_coords[0],uvs[0]),Multiply(barycentric_coords[1],uvs[1])), Multiply(barycentric_coords[2],uvs[2])).slice(0,2);
+          color = current_texture.getTexel(uv[0], uv[1]);
+        }
         var z_reciprocal = barycentric_coords[0]*(1/p0.z) + barycentric_coords[1]*(1/p1.z) + barycentric_coords[2]*(1/p2.z);        
         lights.forEach(element => {
           if(element.type == LT_AMBIENT){
@@ -722,7 +738,7 @@ var Vertex4to3 = function(v) {
 
 
 var RenderTriangle = function(element) {
-  DrawFilledTriangle(element.v0,element.v1,element.v2, element.normals,element.color);
+  DrawFilledTriangle(element.v0,element.v1,element.v2, element.normals,element.color,element.uvs);
   // DrawWireframeTriangle(element.v0,element.v1,element.v2, element.color);
 }
 
@@ -768,10 +784,13 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
 
     //没写三维空间的重心坐标插值，先试试在屏幕空间插值法线
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,in_vertex);
+    in_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     in_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[0]);
+    out0_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     out0_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[1]);
+    out1_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     out1_normal =AddVertex(AddVertex( MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
 
     new_triangles.push(TriangleWithNormal(
@@ -781,7 +800,10 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
       triangle.color,
       [in_normal,
       out0_normal,
-      out1_normal]
+      out1_normal],
+      [in_uv,
+      out0_uv,
+      out1_uv]
       ));
 
   } else if (in_count == 2) {
@@ -800,12 +822,16 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
 
     //没写三维空间的重心坐标插值，先试试在屏幕空间插值法线
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,in_vertexs[0]);
+    in0_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     in0_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,in_vertexs[1]);
+    in1_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     in1_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1])) , MultiplyVertex(bary_coord[2], triangle.normals[2]));
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[0]);
+    out0_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     out0_normal =AddVertex(AddVertex( MultiplyVertex(bary_coord[0], triangle.normals[0]) ,MultiplyVertex(bary_coord[1], triangle.normals[1])), MultiplyVertex(bary_coord[2], triangle.normals[2]));
     bary_coord = BarycentricInterpolation(triangle.v0, triangle.v1,triangle.v2,IntersectionPoints[1]);
+    out1_uv = Add(Add(Multiply(bary_coord[0],triangle.uvs[0]),Multiply(bary_coord[1],triangle.uvs[1])), Multiply(bary_coord[2],triangle.uvs[2])).slice(0,2);
     out1_normal = AddVertex(AddVertex(MultiplyVertex(bary_coord[0], triangle.normals[0]), MultiplyVertex(bary_coord[1], triangle.normals[1]) ), MultiplyVertex(bary_coord[2], triangle.normals[2]));
 
     new_triangles.push(TriangleWithNormal(
@@ -815,7 +841,10 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
       triangle.color,
       [in0_normal,
       in1_normal,
-      out0_normal]
+      out0_normal],
+      [in0_uv,
+      in1_uv,
+      out0_uv]
       ));
     new_triangles.push(TriangleWithNormal(
       [IntersectionPoints[0],
@@ -824,7 +853,10 @@ var ClipTriangleFunc = function(triangle, plane, new_triangles) {
       triangle.color,
       [out0_normal,
       out1_normal,
-      in1_normal]      
+      in1_normal],
+      [out0_uv,
+      out1_uv,
+      in1_uv]     
       ));
   }
 }
@@ -868,7 +900,8 @@ var RenderModel = function(model, transform) {
       model.triangles[i].color,
       [Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[0].x,model.triangles[i].normals[0].y,model.triangles[i].normals[0].z,0))),
       Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[1].x,model.triangles[i].normals[1].y,model.triangles[i].normals[1].z,0))),
-      Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[2].x,model.triangles[i].normals[2].y,model.triangles[i].normals[2].z,0)))]
+      Vertex4to3(MultiplyMV(Transposed(inverse(transform)),Vertex4(model.triangles[i].normals[2].x,model.triangles[i].normals[2].y,model.triangles[i].normals[2].z,0)))],
+      model.triangles[i].uvs
       );//法线存摄像机空间的
       var t = ClipTriangle(projected_triangle);
       new_triangles = new_triangles.concat(t);
@@ -933,6 +966,7 @@ var GenerateFromObj = function(objText, color) {
   var vertexes = [];
   var normals = [];
   var triangles = [];
+  var uvs = [];
 
   var vertexMatches = objText.match(/^v( -?\d+(\.\d+)?){3}$/gm);
   if (vertexMatches)
@@ -957,6 +991,18 @@ var GenerateFromObj = function(objText, color) {
       });
   }
 
+  var uvMatches = objText.match(/^vt( -?\d+(\.\d+)?){2}$/gm);
+  if (uvMatches)
+  {
+      uvMatches.forEach(uv =>
+      {
+          var list = uv.split(" ");
+          list.shift();
+          var n = [parseFloat(list[0]), parseFloat(list[1])];
+          uvs.push(n);
+      });
+  }
+
   var faceMatches = objText.match(/^f( \d+\/\d+\/\d+){3}$/gm);
   if (faceMatches)
   {
@@ -968,7 +1014,8 @@ var GenerateFromObj = function(objText, color) {
           list1 = list[1].split("\/").map(function(element){return parseInt(element)});
           list2 = list[2].split("\/").map(function(element){return parseInt(element)});
           var normal = [normals[list0[2]-1], normals[list1[2]-1], normals[list2[2]-1]];
-          var triangle = TriangleWithNormal([list0[0]-1,list1[0]-1,list2[0]-1], color, normal);
+          var uv = [uvs[list0[1]-1], uvs[list1[1]-1], uvs[list2[1]-1]];
+          var triangle = TriangleWithNormal([list0[0]-1,list1[0]-1,list2[0]-1], color, normal, uv);
           triangles.push(triangle);
       });
   }
@@ -1018,15 +1065,11 @@ var cube = Model(vertexes, triangles, Vertex(0, 0, 0), Math.sqrt(3));
 
 var sphere = GenerateSphere(15, GREEN);
 
-var instances = [
-  Instance(cube, Vertex(-1.5, 0, 7), Identity4x4, 0.75),
-  Instance(cube, Vertex(1.25, 2.5, 7.5), MakeOYRotationMatrix(195)),
-  Instance(sphere, Vertex(1.75, -0.5, 7), Identity4x4, 1.5),
-];
+var instances = [];
 
-var camera = Camera([0, 1, -2], MakeOYRotationMatrix(0));
+var camera = Camera([0, 1, -10], MakeOYRotationMatrix(0));
 
-var current_texture = Texture("default_texture.png");
+var current_texture ;
 
 lights = [
   Light(LT_AMBIENT, 0.2),
