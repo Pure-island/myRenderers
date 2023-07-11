@@ -31,7 +31,7 @@ window.onload=function(){
           reader.onload=function(){
             objModel = GenerateFromObj(reader.result, GRAY);
             instances = [];
-            instances.push(Instance(objModel, Vertex(0, -30, 100), MakeOYRotationMatrix(180), 1));            
+            instances.push(Instance(objModel, Vertex(0, -30, 200), MakeOYRotationMatrix(180), 1));            
           }
         }               
       });
@@ -613,6 +613,9 @@ var DrawWireframeTriangle = function(p0,p1,p2,color){
 
 // 包围盒法画三角形
 var DrawFilledTriangle = function(p0,p1,p2,normals,input_color,uvs){
+  if(normals[0].z > 0 && normals[1].z > 0 && normals[2].z > 0){
+    return;
+  }
   
   // DrawWireframeTriangle(p0,p1,p2,color);
   var min_x = Math.min(p0.x,p1.x,p2.x);
@@ -644,7 +647,7 @@ var DrawFilledTriangle = function(p0,p1,p2,normals,input_color,uvs){
             local_diffuse = Add(Multiply(element.intensity * cof, color),local_diffuse);
 
             half_dir = MultiplyVertex(0.5,AddVertex(lightDir,normal));
-            spec_cof = Math.pow(Math.max(DotVertex(half_dir,normal), 0), 64) ;
+            spec_cof = Math.pow(Math.max(DotVertex(half_dir,normal), 0), 128) ;
             local_specular = Add(Multiply(element.intensity * spec_cof, WHITE),local_specular);
           }else if(element.type == LT_POINT){
             lightDir = SubtractVertex(element.vector,Vertex(x,y,1/z_reciprocal));
@@ -653,7 +656,7 @@ var DrawFilledTriangle = function(p0,p1,p2,normals,input_color,uvs){
             local_diffuse = Add(Multiply(element.intensity * cof, color),local_diffuse);
 
             half_dir = MultiplyVertex(0.5,AddVertex(lightDir,normal));
-            spec_cof = Math.pow(Math.max(DotVertex(half_dir,normal), 0), 64) ;
+            spec_cof = Math.pow(Math.max(DotVertex(half_dir,normal), 0), 128) ;
             local_specular = Add(Multiply(element.intensity * spec_cof, WHITE),local_specular);
           }
         });
@@ -1067,7 +1070,7 @@ var sphere = GenerateSphere(15, GREEN);
 
 var instances = [];
 
-var camera = Camera([0, 1, -10], MakeOYRotationMatrix(0));
+var camera = Camera([0, 1, -100], MakeOYRotationMatrix(0));
 
 var current_texture ;
 
@@ -1103,6 +1106,12 @@ document.onkeydown=function(e){    //对整个页面监听键盘输入
   if(keyNum==68){  //d
     camera.position = [camera.position[0] + 0.1, camera.position[1], camera.position[2]];
   }  
+  if(keyNum== 69){
+    instances[0]= Instance(instances[0].model,instances[0].position,MultiplyMM4(instances[0].orientation, MakeOYRotationMatrix(30)),instances[0].scale);
+  }
+  if(keyNum== 81){
+    instances[0]= Instance(instances[0].model,instances[0].position,MultiplyMM4(instances[0].orientation, MakeOYRotationMatrix(-30)),instances[0].scale);
+  }
 
   mainLoop();
 }
