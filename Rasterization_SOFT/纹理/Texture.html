@@ -1095,16 +1095,16 @@ document.onkeydown=function(e){    //对整个页面监听键盘输入
   var keyNum=window.event ? e.keyCode :e.which;       //获取被按下的键值  
   //判断如果用户按下了w键（keycody=87）  
   if(keyNum==87){  //w
-    camera.position = [camera.position[0], camera.position[1], camera.position[2] + 0.1];
+    camera.position = [camera.position[0], camera.position[1], camera.position[2] + 10];
   }  
   if(keyNum==83){  //s
-    camera.position = [camera.position[0], camera.position[1], camera.position[2] - 0.1];
+    camera.position = [camera.position[0], camera.position[1], camera.position[2] - 10];
   }  
   if(keyNum==65){  //a
-    camera.position = [camera.position[0] - 0.1, camera.position[1], camera.position[2]];
+    camera.position = [camera.position[0] - 10, camera.position[1], camera.position[2]];
   }  
   if(keyNum==68){  //d
-    camera.position = [camera.position[0] + 0.1, camera.position[1], camera.position[2]];
+    camera.position = [camera.position[0] + 10, camera.position[1], camera.position[2]];
   }  
   if(keyNum== 69){
     instances[0]= Instance(instances[0].model,instances[0].position,MultiplyMM4(instances[0].orientation, MakeOYRotationMatrix(30)),instances[0].scale);
